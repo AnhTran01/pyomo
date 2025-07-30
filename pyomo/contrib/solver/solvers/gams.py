@@ -44,6 +44,7 @@ from pyomo.contrib.solver.common.util import (
     NoOptimalSolutionError,
     NoSolutionError,
 )
+from pyomo.opt.base.solvers import _extract_version
 from pyomo.common.tee import TeeStream
 from pyomo.core.expr.visitor import replace_expressions
 from pyomo.core.expr.numvalue import value
@@ -181,11 +182,26 @@ class GAMS(SolverBase):
             n,
         )
 
-    def version(self):
-        """Returns a 4-tuple describing the solver executable version."""
-        if self._version is None:
-            self._version = self._get_version()
-        return self._version
+    def version(self, config=None):
+        if config is None:
+            config = self.config
+        pth = config.executable.path()
+        if self._version_cache is None or self._version_cache[0] != pth:
+            if pth is None:
+                self._version_cache = (None, None)
+            else:
+                cmd = [pth, "audit", "lo=3"]
+                results = subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    universal_newlines=True,
+                )
+                version = results.stdout.splitlines()[0]
+                version = [char for char in version.split(' ') if len(char) > 0][1]
+                self._version_cache = (pth, version)
+        
+        return self._version_cache[1]
 
     @document_kwargs_from_configdict(CONFIG)
     def solve(self, model, **kwds):
@@ -207,7 +223,6 @@ class GAMS(SolverBase):
         newdir = False
         dname = None # local variable to hold the working directory name
         lst = "output.lst"
-        put_results = "results"
         output_filename = None
         
         with TempfileManager.new_context() as tempfile:
@@ -222,10 +237,11 @@ class GAMS(SolverBase):
             else:
                 dname = config.working_dir
                 newdir = True
-            # if not os.path.exists(dname):
-            #     os.mkdir(dname)
+            if not os.path.exists(dname):
+                os.mkdir(dname)
             basename = os.path.join(dname, model.name)
             output_filename = basename + '.gms'
+            lst_filename = os.path.join(dname, lst)
             # NOTE: Do we allow overwrite of existing .gms file?
             # if os.path.exists(basename + '.gms'):
             #     raise RuntimeError(
@@ -244,24 +260,20 @@ class GAMS(SolverBase):
                 # NOTE: omit InfeasibleConstraintException for now
                 timer.stop('write_gms_file')
 
-        lst_filename = os.path.join(dname, lst)
         if config.writer_config.put_results_format == 'gdx':
             results_filename = os.path.join(dname, "GAMS_MODEL_p.gdx")
-            statresults_filename = os.path.join(dname, "%s_s.gdx" % (put_results,))
+            statresults_filename = os.path.join(dname, "%s_s.gdx" % (config.writer_config.put_results,))
         else:
             raise NotImplementedError(
                 "Only GDX format is currently supported for results."
             )
-        print('os.path.exists(lst_filename)', os.path.exists(lst_filename))
-        print('os.path.exists(results_filename)', os.path.exists(results_filename))
-        print('os.path.exists(statresults_filename)', os.path.exists(statresults_filename))
         ####################################################################
         # Apply solver
         ####################################################################
         exe_path = config.executable.path()
         # NOTE: The second field must be specifically `model.gms` to generate the gdx files, why?
         command = [exe_path, output_filename, "o=" + lst, "curdir=" + dname]
-        
+
         # NOTE: logfile is currently unimplemented in
         # pyomo/pyomo/contrib/solver/common/base.py
         if config.tee:
@@ -278,6 +290,8 @@ class GAMS(SolverBase):
         # if config.logfile:
         #     command.append(f"lf={self._rewrite_path_win8p3(config.logfile)}")
         # NOTE: This will need to be redesign - tmpfile/tmpdir is removed after write() by __exit__ in pyomo.common.tempfiles
+        if results_filename:
+            pass
         try:
             ostreams = [StringIO()]
             if config.tee:
@@ -287,7 +301,6 @@ class GAMS(SolverBase):
                 result = subprocess.run(command, stdout=t.STDOUT, stderr=t.STDERR)
             rc = result.returncode
             txt = ostreams[0].getvalue()
-
             if config.working_dir:
                 print("\nGAMS WORKING DIRECTORY: %s\n" % config.working_dir)
 
@@ -335,40 +348,51 @@ class GAMS(SolverBase):
         results.solver_name = "GAMS "
         results.solver_version = str(self.version())
         solvestat = stat_vars["SOLVESTAT"]
+        
+        # mapping of solution/solver status:
+        # ok = Normal termination = feasible
+        # warning = Termination with unusual condition = infeasible
+        # error = Terminated internally with error = noSolution
+        # unknown = An uninitialized value = noSolution
         if solvestat == 1:
-            results.solution_status = SolverStatus.ok
-        elif solvestat == 2:
-            results.solution_status = SolverStatus.ok
-            results.termination_condition = TerminationCondition.maxIterations
-        elif solvestat == 3:
-            results.solution_status = SolverStatus.ok
-            results.termination_condition = TerminationCondition.maxTimeLimit
-        elif solvestat == 5:
-            results.solution_status = SolverStatus.ok
-            results.termination_condition = TerminationCondition.maxEvaluations
-        elif solvestat == 7:
-            results.solution_status = SolverStatus.aborted
-            results.termination_condition = (
-                TerminationCondition.licensingProblems
-            )
-        elif solvestat == 8:
-            results.solution_status = SolverStatus.aborted
-            results.termination_condition = TerminationCondition.userInterrupt
-        elif solvestat == 10:
-            results.solution_status = SolverStatus.error
-            results.termination_condition = TerminationCondition.solverFailure
-        elif solvestat == 11:
-            results.solution_status = SolverStatus.error
-            results.termination_condition = (
-                TerminationCondition.internalSolverError
-            )
-        elif solvestat == 4:
-            results.solution_status = SolverStatus.warning
-            results.solver.message = "Solver quit with a problem (see LST file)"
-        elif solvestat in (9, 12, 13):
-            results.solution_status = SolverStatus.error
-        elif solvestat == 6:
-            results.solution_status = SolverStatus.unknown
+            results.solution_status = SolutionStatus.feasible
+        # elif solvestat == 2:
+        #     results.solution_status = SolverStatus.ok
+        #     results.termination_condition = TerminationCondition.maxIterations
+        # elif solvestat == 3:
+        #     results.solution_status = SolverStatus.ok
+        #     results.termination_condition = TerminationCondition.maxTimeLimit
+        # elif solvestat == 5:
+        #     results.solution_status = SolverStatus.ok
+        #     results.termination_condition = TerminationCondition.maxEvaluations
+        # elif solvestat == 7:
+        #     results.solution_status = SolverStatus.aborted
+        #     results.termination_condition = (
+        #         TerminationCondition.licensingProblems
+        #     )
+        # elif solvestat == 8:
+        #     results.solution_status = SolverStatus.aborted
+        #     results.termination_condition = TerminationCondition.userInterrupt
+        # elif solvestat == 10:
+        #     results.solution_status = SolverStatus.error
+        #     results.termination_condition = TerminationCondition.solverFailure
+        # elif solvestat == 11:
+        #     results.solution_status = SolverStatus.error
+        #     results.termination_condition = (
+        #         TerminationCondition.internalSolverError
+        #     )
+        # elif solvestat == 4:
+        #     results.solution_status = SolverStatus.warning
+        #     results.solver.message = "Solver quit with a problem (see LST file)"
+        # elif solvestat in (9, 12, 13):
+        #     results.solution_status = SolverStatus.error
+        # elif solvestat == 6:
+        #     results.solution_status = SolverStatus.unknown
+        
+        # NOTE: IGNORE SOLVER FOR NOW
+        results.termination_condition = TerminationCondition.convergenceCriteriaSatisfied
+        return results
+
 
     def _parse_gdx_results(self, config, results_filename, statresults_filename):
         model_soln = dict()
