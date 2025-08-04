@@ -39,7 +39,8 @@ from pyomo.core.base import (
 from pyomo.core.base.component import ActiveComponent
 from pyomo.core.base.label import LPFileLabeler, NumericLabeler
 from pyomo.opt import WriterFactory
-from pyomo.repn.quadratic import QuadraticRepnVisitor
+# from pyomo.repn.quadratic import QuadraticRepnVisitor
+from pyomo.repn.linear import LinearRepnVisitor
 from pyomo.repn.util import (
     FileDeterminism,
     FileDeterminism_to_SortComponents,
@@ -69,9 +70,6 @@ class GAMSWriterInfo(object):
 
         The :py:class:`SymbolMap` bimap between row/column labels and
         Pyomo components.
-
-        Unsure if GAMS needed this
-
     """
 
     def __init__(self, var_symbol_map, con_symbol_map):
@@ -90,7 +88,7 @@ class GAMSWriter(object):
     output_filename: str
         Name of file to write GAMS model to. Optionally pass a file-like
         stream and the model will be written to that instead.
-    io_options: dict
+    io_options: str
         - warmstart=True
             Warmstart by initializing model's variables to their values.
         - symbolic_solver_labels=False
@@ -169,7 +167,7 @@ class GAMSWriter(object):
         'mtype',
         ConfigValue(
             default=None,
-            description='Model type. If None, will chose from lp, nlp, mip, and minlp.',
+            description='Model type. If None, will chose from lp, mip. nlp and minlp will be implemented in the future.',
         ),
     )
     CONFIG.declare(
@@ -404,26 +402,14 @@ class _GMSWriter_impl(object):
 
         self.var_symbol_map = SymbolMap(var_labeler)
         self.con_symbol_map = SymbolMap(con_labeler)
-
-        # GAMS Required an "OBJECTIVE_VARIABLE" - manually created
-        # OBJECTIVE_CONSTANT = Var(name='OBJECTIVE_CONSTANT', bounds=(1, 1))
-        # OBJECTIVE_CONSTANT.construct()
-        # self.var_map[id(OBJECTIVE_CONSTANT)] = OBJECTIVE_CONSTANT
-
         self.var_order = {_id: i for i, _id in enumerate(self.var_map)}
         self.var_recorder = OrderedVarRecorder(self.var_map, self.var_order, sorter)
-
-        objective_visitor = QuadraticRepnVisitor(
+        
+        visitor = LinearRepnVisitor(
             self.subexpression_cache,
             var_recorder=self.var_recorder,
         )
-        constraint_visitor = QuadraticRepnVisitor(
-            objective_visitor.subexpression_cache,
-            var_recorder=self.var_recorder,
-        )
-
-        # raise warning for duals / suffix - if component_map[Suffix]:
-
+        
         #
         # Tabulate constraints
         #
@@ -447,14 +433,13 @@ class _GMSWriter_impl(object):
                 # slack variable if skip_trivial_constraints is False,
                 # but that seems rather silly.
                 continue
-            repn = constraint_visitor.walk_expression(body)
+            repn = visitor.walk_expression(body)
             if repn.nonlinear is not None:
                 raise ValueError(
-                    f"Model constraint ({con.name}) contains nonlinear terms that "
-                    "cannot be written to LP format"
+                    f"Model constraint ({con.name}) contains nonlinear terms that is currently not supported in the new gams_writer"
                 )
             
-                        # Pull out the constant: we will move it to the bounds
+            # Pull out the constant: we will move it to the bounds
             offset = repn.constant
             repn.constant = 0
 
@@ -469,43 +454,35 @@ class _GMSWriter_impl(object):
                     continue
 
             con_symbol = con_labeler(con)
-            # var_symbol = var_labeler(con) # To access variable label, need to access repn.linear/repn.quadratic
-
             declaration, definition, bounds = None, None, None
 
             if lb is not None:
                 if ub is None:
                     label = f'{con_symbol}_lo'
                     self.con_symbol_map.addSymbol(con, label)
-                    # ostream.write(f'\n{label}.. ')
-                    # self.write_expression(ostream, repn, False)
-                    # ostream.write(f' =G= {(lb - offset)!s};')
+                    self.var_symbol_map.addSymbol(con, label)
                     declaration = f'\n{label}.. '
-                    definition = self.write_expression(ostream, repn, False)
+                    definition = self.write_expression(ostream, repn)
                     bounds = f' =G= {(lb - offset)!s};'
                     con_list[label] = declaration + definition + bounds
                 elif lb == ub:
                     label = f'{con_symbol}'
                     self.con_symbol_map.addSymbol(con, label)
-                    # ostream.write(f'\n{label}.. ')
-                    # self.write_expression(ostream, repn, False)
-                    # ostream.write(f' =E= {(lb - offset)!s};')
+                    self.var_symbol_map.addSymbol(con, label)
                     declaration = f'\n{label}.. '
-                    definition = self.write_expression(ostream, repn, False)
+                    definition = self.write_expression(ostream, repn)
                     bounds = f' =E= {(lb - offset)!s};'
                     con_list[label] = declaration + definition + bounds
                 else:
-                    print('Handle else condition after: Bounded constraint with lb and ub')
-                    pass
+                    raise NotImplementedError(
+                        "Bounded constraints within the same expression is not supported"
+                    )
             
             elif ub is not None:
                 label = f'{con_symbol}_hi'
                 self.con_symbol_map.addSymbol(con, label)
-                # ostream.write(f'\n{label}.. ')
-                # self.write_expression(ostream, repn, False)
-                # ostream.write(f' =L= {(ub - offset)!s};')
                 declaration = f'\n{label}.. '
-                definition = self.write_expression(ostream, repn, False)
+                definition = self.write_expression(ostream, repn)
                 bounds = f' =L= {(lb - offset)!s};'
                 con_list[label] = declaration + definition + bounds
 
@@ -531,24 +508,19 @@ class _GMSWriter_impl(object):
             )
 
         obj = objectives[0]
-        repn = objective_visitor.walk_expression(obj.expr)
+        repn = visitor.walk_expression(obj.expr)
         if repn.nonlinear is not None:
             raise ValueError(
                 f"Model objective ({obj.name}) contains nonlinear terms that "
                 "is currently not supported in this new GAMSWriter"
             )
-        # if repn.constant or not (repn.linear or getattr(repn, 'quadratic', None)):
-        #     repn.linear[id(OBJECTIVE_CONSTANT)] = repn.constant
-        #     repn.constant = 0
         
         label = self.con_symbol_map.getSymbol(obj, con_labeler)
-        # ostream.write(f'\n{label}.. -GAMS_OBJECTIVE ')
-        # self.write_expression(ostream, repn, True)
-        # ostream.write(f' =E= {(-repn.constant)!s};\n\n')
         declaration = f'\n{label}.. -GAMS_OBJECTIVE '
-        definition = self.write_expression(ostream, repn, True)
+        definition = self.write_expression(ostream, repn)
         bounds = f' =E= {(-repn.constant)!s};\n\n'
         con_list[label] = declaration + definition + bounds
+        self.var_symbol_map.addSymbol(obj, label)
 
         #
         # Write out variable declaration
@@ -564,17 +536,18 @@ class _GMSWriter_impl(object):
         for vid, v in self.var_map.items():
             v_symbol = getSymbolByObjectID(vid, None)
             if not v_symbol:
-                continue            
-            if v.is_binary():
-                binary_vars.append(v_symbol)
-            elif v.is_integer():
-                integer_vars.append(v_symbol)
-            else:
+                continue     
+            if v.is_continuous():
                 ostream.write(
                 f"\t{v_symbol} \n"
                 )
                 lb, ub = v.bounds
                 var_bounds[v_symbol] = (lb, ub)
+            elif v.is_binary():
+                binary_vars.append(v_symbol)
+            elif v.is_integer():
+                integer_vars.append(v_symbol)
+
         ostream.write(
             f"\tGAMS_OBJECTIVE;\n\n"
         )
@@ -587,6 +560,9 @@ class _GMSWriter_impl(object):
             ostream.write("\nBINARY VARIABLES\n\t")
             ostream.write("\n\t".join(binary_vars) + ';\n\n')
 
+        #
+        # Writing out the equations/constraints
+        #
         ostream.write(
             "EQUATIONS \n"
         )
@@ -596,18 +572,7 @@ class _GMSWriter_impl(object):
                 ostream.write(f"\t{c}\n")
             else:
                 ostream.write(f"\t{c};\n\n")
-                
-        # dict_iterator = iter(self.con_symbol_map.byObject)
-        # try:
-        #     while True:
-        #         cid = next(dict_iterator)
-        #         c = self.con_symbol_map.byObject[cid]
-        #         ostream.write(f"\t{c}\n")
-        # except StopIteration:
-        #         ostream.write(f"\t;\n")
-        #
-        # Writing out the actual equation
-        #
+
         for con_label, con in con_list.items():
             ostream.write(con)
 
@@ -624,7 +589,7 @@ class _GMSWriter_impl(object):
         # CHECK FOR mtype flag based on variable domains - reals, integer
         if config.mtype is None:
             if binary_vars:
-                config.mtype = 'mip' # expand this to lp, nlp, minlp
+                config.mtype = 'mip' # expand this to nlp, minlp
             else:
                 config.mtype = 'lp'
 
@@ -682,29 +647,29 @@ class _GMSWriter_impl(object):
                 raise NotImplementedError(
                     "GAMSWriter: put_results_format='dat' is not implemented yet"
                 )
-                # results = put_results + '.dat'
-                # output_file.write("\nfile results /'%s'/;" % results)
-                # output_file.write("\nresults.nd=15;")
-                # output_file.write("\nresults.nw=21;")
-                # output_file.write("\nput results;")
-                # output_file.write("\nput 'SYMBOL  :  LEVEL  :  MARGINAL' /;")
+                # results = config.put_results + '.dat'
+                # ostream.write("\nfile results /'%s'/;" % results)
+                # ostream.write("\nresults.nd=15;")
+                # ostream.write("\nresults.nw=21;")
+                # ostream.write("\nput results;")
+                # ostream.write("\nput 'SYMBOL  :  LEVEL  :  MARGINAL' /;")
                 # for var in var_list:
-                #     output_file.write("\nput %s ' ' %s.l ' ' %s.m /;" % (var, var, var))
+                #     ostream.write("\nput %s ' ' %s.l ' ' %s.m /;" % (var, var, var))
                 # for con in constraint_names:
-                #     output_file.write("\nput %s ' ' %s.l ' ' %s.m /;" % (con, con, con))
-                # output_file.write(
+                #     ostream.write("\nput %s ' ' %s.l ' ' %s.m /;" % (con, con, con))
+                # ostream.write(
                 #     "\nput GAMS_OBJECTIVE ' ' GAMS_OBJECTIVE.l "
                 #     "' ' GAMS_OBJECTIVE.m;\n"
                 # )
 
-                # statresults = put_results + 'stat.dat'
-                # output_file.write("\nfile statresults /'%s'/;" % statresults)
-                # output_file.write("\nstatresults.nd=15;")
-                # output_file.write("\nstatresults.nw=21;")
-                # output_file.write("\nput statresults;")
-                # output_file.write("\nput 'SYMBOL   :   VALUE' /;")
+                # statresults = config.put_results + 'stat.dat'
+                # ostream.write("\nfile statresults /'%s'/;" % statresults)
+                # ostream.write("\nstatresults.nd=15;")
+                # ostream.write("\nstatresults.nw=21;")
+                # ostream.write("\nput statresults;")
+                # ostream.write("\nput 'SYMBOL   :   VALUE' /;")
                 # for stat in stat_vars:
-                #     output_file.write("\nput '%s' ' ' %s /;\n" % (stat, stat))
+                #     ostream.write("\nput '%s' ' ' %s /;\n" % (stat, stat))
 
 
         timer.toc("Finished writing .gsm file", level=logging.DEBUG)
@@ -712,27 +677,9 @@ class _GMSWriter_impl(object):
         info = GAMSWriterInfo(self.var_symbol_map, self.con_symbol_map)
         return info
 
-        ######### BELOW HERE ARE DEBUGS
-        # print('Domain of variables')
-        # for varID, varObj in self.var_map.items():
-        #     print(varID, varObj.domain, varObj)
-
-        # print('Obtained the repn from QuadraticWalker')
-
-        # print(repn)
-        # print('obj object', objectives)
-        # print('obj[0]', objectives[0])
-
-        # print('calling label for objective',self.con_symbol_map.getSymbol(obj, con_labeler)) # calling the label of the constraint 
-
-        # print('mapping ID of repn to var_map and coefficients')
-        # for varId, coef in repn.linear.items():
-        #     print(varId, self.var_map[varId], self.var_symbol_map.getSymbol(self.var_map[varId]))
-
-
-    def write_expression(self, ostream, expr, is_objective):
+    def write_expression(self, ostream, expr):
         save_eq = []
-        # assert not expr.constant
+        assert not expr.constant
         getSymbol = self.var_symbol_map.getSymbol
         getVarOrder = self.var_order.__getitem__
         getVar = self.var_map.__getitem__
@@ -743,54 +690,9 @@ class _GMSWriter_impl(object):
             ):
                 if coef < 0:
                     # ostream.write(f'{coef!s}*{getSymbol(getVar(vid))}')
-                    expr_str += f'{coef!s}*{getSymbol(getVar(vid))} '
+                    expr_str += f'{coef!s}*{getSymbol(getVar(vid))} \n'
                 else:
                     # ostream.write(f'+{coef!s}*{getSymbol(getVar(vid))}')
-                    expr_str += f'+ {coef!s} * {getSymbol(getVar(vid))} ' 
-
-
-        quadratic = getattr(expr, 'quadratic', None)
-        if quadratic:
-
-            def _normalize_constraint(data):
-                (vid1, vid2), coef = data
-                c1 = getVarOrder(vid1)
-                c2 = getVarOrder(vid2)
-                if c2 < c1:
-                    col = c2, c1
-                    sym = f' {getSymbol(getVar(vid2))} * {getSymbol(getVar(vid1))}'
-                elif c1 == c2:
-                    col = c1, c1
-                    sym = f' {getSymbol(getVar(vid2))} ^ 2'
-                else:
-                    col = c1, c2
-                    sym = f' {getSymbol(getVar(vid1))} * {getSymbol(getVar(vid2))}'
-                if coef < 0:
-                    return col, str(coef) + sym
-                else:
-                    return col, f'+{coef!s}{sym}'
-
-            if is_objective:
-                #
-                # Times 2 because LP format requires /2 for all the
-                # quadratic terms /of the objective only/.  Discovered
-                # the last bit through trial and error.
-                # Ref: ILog CPlex 8.0 User's Manual, p197.
-                #
-                def _normalize_objective(data):
-                    vids, coef = data
-                    return _normalize_constraint((vids, 2 * coef))
-
-                _normalize = _normalize_objective
-            else:
-                _normalize = _normalize_constraint
-
-            ostream.write('+ [\n')
-            quadratic = sorted(map(_normalize, quadratic.items()), key=itemgetter(0))
-            ostream.write(''.join(map(itemgetter(1), quadratic)))
-            if is_objective:
-                ostream.write("] / 2\n")
-            else:
-                ostream.write("]\n")
+                    expr_str += f'+ {coef!s} * {getSymbol(getVar(vid))} \n' 
 
         return expr_str
