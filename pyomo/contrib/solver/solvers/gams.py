@@ -392,6 +392,8 @@ class GAMS(SolverBase):
         if config.logfile is not None:
             config.logfile = os.path.abspath(config.logfile)
 
+        config.writer_config.put_results_format = 'gdx' if gdxcc_available else 'dat'
+
         # local variable to hold the working directory name and flags
         newdir = False
         dname = None 
@@ -417,7 +419,7 @@ class GAMS(SolverBase):
             with open(
                 output_filename, 'w', newline='\n', encoding='utf-8'
             ) as gms_file:
-                timer.start('write_gms_file')
+                timer.start(f'write_{output_filename}_file')
                 self._writer.config.set_value(config.writer_config)
                 gms_info = self._writer.write(
                     model,
@@ -425,14 +427,14 @@ class GAMS(SolverBase):
                     symbolic_solver_labels=config.symbolic_solver_labels,
                     )
                 # NOTE: omit InfeasibleConstraintException for now
-                timer.stop('write_gms_file')
+                timer.stop(f'write_{output_filename}_file')
         if config.writer_config.put_results_format == 'gdx':
             results_filename = os.path.join(dname, f"{model.name}_p.gdx")
             statresults_filename = os.path.join(dname, "%s_s.gdx" % (config.writer_config.put_results,))
         else:
-            raise NotImplementedError(
-                "Only GDX format is currently supported for results."
-            )
+            results_filename = os.path.join(dname, "%s.dat" % (config.writer_config.put_results,))
+            statresults_filename = os.path.join(dname, "%sstat.dat" % (config.writer_config.put_results,))
+
         ####################################################################
         # Apply solver
         ####################################################################
@@ -493,12 +495,14 @@ class GAMS(SolverBase):
                 timer.stop('parse_gdx')
 
             else:
-                # model_soln, stat_vars = self._parse_dat_results(
-                #     results_filename, statresults_filename
-                # )
-                raise NotImplementedError(
-                    "Only GDX format is currently supported for results."
+                timer.start('parse_dat')
+                model_soln, stat_vars = self._parse_dat_results(
+                    config, results_filename, statresults_filename
                 )
+                timer.stop('parse_dat')
+                # raise NotImplementedError(
+                #     "Only GDX format is currently supported for results."
+                # )
         finally:
             if not config.working_dir:
                 print('Cleaning up temporary directory is handled by `release` from pyomo.common.tempfiles')
@@ -525,21 +529,6 @@ class GAMS(SolverBase):
         results = GAMSResults()
         results.solver_name = "GAMS "
         results.solver_version = str(self.version())
-        # results.name = output_filename
-        # results.lower_bound = stat_vars["OBJEST"]
-        # results.upper_bound = stat_vars["OBJEST"]
-        # results.number_of_variables = stat_vars["NUMVAR"]
-        # results.number_of_constraints = stat_vars["NUMEQU"]
-        # results.number_of_nonzeros = stat_vars["NUMNZ"]
-        # results.number_of_binary_variables = None
-        # # Includes binary vars:
-        # results.number_of_integer_variables = stat_vars["NUMDVAR"]
-        # results.number_of_continuous_variables = (
-        #     stat_vars["NUMVAR"] - stat_vars["NUMDVAR"]
-        # )
-        # results.number_of_objectives = 1  # required by GAMS writer
-        # obj = list(model.component_data_objects(Objective, active=True))
-        # assert len(obj) == 1, 'Only one objective is allowed.'
 
         solvestat = stat_vars["SOLVESTAT"]
         if solvestat == 1:
@@ -659,8 +648,8 @@ class GAMS(SolverBase):
                     and model.rc.import_enabled()
                 ):
                     model.rc.update(results.solution_loader.get_reduced_costs())
+            
             else:
-
                 results.incumbent_objective = value(
                     replace_expressions(
                         obj[0].expr,
@@ -672,290 +661,6 @@ class GAMS(SolverBase):
                         remove_named_expressions=True,
                     )
                 )
-        # results.solution_loader = SolSolutionLoader(None, None)
-        # objctvval = stat_vars["OBJVAL"]
-
-        # if (
-        #     results.gams_solution_status in {SolutionStatus.feasible, SolutionStatus.optimal}
-        # ):
-        #     results.incumbent_objective = stat_vars["OBJVAL"]
-        
-        # # NOTE: LegacySolverWrapper needs to modify - number_of_constraints/variables are not modifiable
-        # soln = Solution()
-        # has_rc_info = True
-        # for sym, obj in gms_info.var_symbol_map.bySymbol.items():
-        #     if obj.parent_component().ctype is Objective:
-        #         soln.objective[sym] = {'Value': objctvval}
-        #     if obj.parent_component().ctype is not Var:
-        #         continue
-        #     try:
-        #         rec = model_soln[sym]
-        #     except KeyError:
-        #         # no solution returned
-        #         rec = (float('nan'), float('nan'))
-        #     # obj.value = float(rec[0])
-        #     soln.variable[sym] = {"Value": float(rec[0])}
-        #     if extract_rc and has_rc_info:
-        #         try:
-        #             # model.rc[obj] = float(rec[1])
-        #             soln.variable[sym]['rc'] = float(rec[1])
-        #         except ValueError:
-        #             # Solver didn't provide marginals
-        #             has_rc_info = False
-        
-        # results.soln = soln
-
-        ####################################################################
-        # Postsolve (OLD GAMS)
-        ####################################################################
-        # model_suffixes = list(
-        #         name
-        #         for (
-        #             name,
-        #             comp,
-        #         ) in pyomo.core.base.suffix.active_import_suffix_generator(model)
-        #     )
-        # extract_dual = 'dual' in model_suffixes
-        # extract_rc = 'rc' in model_suffixes
-        # results = SolverResults()
-        # results.problem.name = output_filename
-        # results.problem.lower_bound = stat_vars["OBJEST"]
-        # results.problem.upper_bound = stat_vars["OBJEST"]
-        # results.problem.number_of_variables = stat_vars["NUMVAR"]
-        # results.problem.number_of_constraints = stat_vars["NUMEQU"]
-        # results.problem.number_of_nonzeros = stat_vars["NUMNZ"]
-        # results.problem.number_of_binary_variables = None
-        # # Includes binary vars:
-        # results.problem.number_of_integer_variables = stat_vars["NUMDVAR"]
-        # results.problem.number_of_continuous_variables = (
-        #     stat_vars["NUMVAR"] - stat_vars["NUMDVAR"]
-        # )
-        # results.problem.number_of_objectives = 1  # required by GAMS writer
-        # obj = list(model.component_data_objects(Objective, active=True))
-        # assert len(obj) == 1, 'Only one objective is allowed.'
-        # obj = obj[0]
-        # objctvval = stat_vars["OBJVAL"]
-        # results.problem.sense = obj.sense
-        # if obj.is_minimizing():
-        #     results.problem.upper_bound = objctvval
-        # else:
-        #     results.problem.lower_bound = objctvval
-
-        # results.solver.name = "GAMS " + str(self.version())  
-
-        # # Init termination condition to None to give preference to this first
-        # # block of code, only set certain TC's below if it's still None
-        # results.solver.termination_condition = None
-        # results.solver.message = None
-        # solvestat = stat_vars["SOLVESTAT"]
-        # if solvestat == 1:
-        #     results.solver.status = SolverStatus.ok
-        # elif solvestat == 2:
-        #     results.solver.status = SolverStatus.ok
-        #     results.solver.termination_condition = TerminationCondition.maxIterations
-        # elif solvestat == 3:
-        #     results.solver.status = SolverStatus.ok
-        #     results.solver.termination_condition = TerminationCondition.maxTimeLimit
-        # elif solvestat == 5:
-        #     results.solver.status = SolverStatus.ok
-        #     results.solver.termination_condition = TerminationCondition.maxEvaluations
-        # elif solvestat == 7:
-        #     results.solver.status = SolverStatus.aborted
-        #     results.solver.termination_condition = (
-        #         TerminationCondition.licensingProblems
-        #     )
-        # elif solvestat == 8:
-        #     results.solver.status = SolverStatus.aborted
-        #     results.solver.termination_condition = TerminationCondition.userInterrupt
-        # elif solvestat == 10:
-        #     results.solver.status = SolverStatus.error
-        #     results.solver.termination_condition = TerminationCondition.solverFailure
-        # elif solvestat == 11:
-        #     results.solver.status = SolverStatus.error
-        #     results.solver.termination_condition = (
-        #         TerminationCondition.internalSolverError
-        #     )
-        # elif solvestat == 4:
-        #     results.solver.status = SolverStatus.warning
-        #     results.solver.message = "Solver quit with a problem (see LST file)"
-        # elif solvestat in (9, 12, 13):
-        #     results.solver.status = SolverStatus.error
-        # elif solvestat == 6:
-        #     results.solver.status = SolverStatus.unknown
-
-        # results.solver.return_code = rc  # 0
-        # # Not sure if this value is actually user time
-        # # "the elapsed time it took to execute a solve statement in total"
-        # results.solver.user_time = stat_vars["ETSOLVE"]
-        # results.solver.system_time = None
-        # results.solver.wallclock_time = None
-        # results.solver.termination_message = None
-
-        # soln = Solution()
-
-        # modelstat = stat_vars["MODELSTAT"]
-        # if modelstat == 1:
-        #     results.solver.termination_condition = TerminationCondition.optimal
-        #     soln.status = SolutionStatus.optimal
-        # elif modelstat == 2:
-        #     results.solver.termination_condition = TerminationCondition.locallyOptimal
-        #     soln.status = SolutionStatus.locallyOptimal
-        # elif modelstat in [3, 18]:
-        #     results.solver.termination_condition = TerminationCondition.unbounded
-        #     soln.status = SolutionStatus.unbounded
-        # elif modelstat in [4, 5, 6, 10, 19]:
-        #     results.solver.termination_condition = TerminationCondition.infeasible
-        #     soln.status = SolutionStatus.infeasible
-        # elif modelstat == 7:
-        #     results.solver.termination_condition = TerminationCondition.feasible
-        #     soln.status = SolutionStatus.feasible
-        # elif modelstat == 8:
-        #     # 'Integer solution model found'
-        #     results.solver.termination_condition = TerminationCondition.optimal
-        #     soln.status = SolutionStatus.optimal
-        # elif modelstat == 9:
-        #     results.solver.termination_condition = (
-        #         TerminationCondition.intermediateNonInteger
-        #     )
-        #     soln.status = SolutionStatus.other
-        # elif modelstat == 11:
-        #     # Should be handled above, if modelstat and solvestat both
-        #     # indicate a licensing problem
-        #     if results.solver.termination_condition is None:
-        #         results.solver.termination_condition = (
-        #             TerminationCondition.licensingProblems
-        #         )
-        #     soln.status = SolutionStatus.error
-        # elif modelstat in [12, 13]:
-        #     if results.solver.termination_condition is None:
-        #         results.solver.termination_condition = TerminationCondition.error
-        #     soln.status = SolutionStatus.error
-        # elif modelstat == 14:
-        #     if results.solver.termination_condition is None:
-        #         results.solver.termination_condition = TerminationCondition.noSolution
-        #     soln.status = SolutionStatus.unknown
-        # elif modelstat in [15, 16, 17]:
-        #     # Having to do with CNS models,
-        #     # not sure what to make of status descriptions
-        #     results.solver.termination_condition = TerminationCondition.optimal
-        #     soln.status = SolutionStatus.unsure
-        # else:
-        #     # This is just a backup catch, all cases are handled above
-        #     soln.status = SolutionStatus.error
-
-        # soln.gap = abs(results.problem.upper_bound - results.problem.lower_bound)
-
-        # has_rc_info = True
-        # for sym, obj in gms_info.var_symbol_map.bySymbol.items():
-        #     if obj.parent_component().ctype is Objective:
-        #         soln.objective[sym] = {'Value': objctvval}
-        #     if obj.parent_component().ctype is not Var:
-        #         continue
-        #     try:
-        #         rec = model_soln[sym]
-        #     except KeyError:
-        #         # no solution returned
-        #         rec = (float('nan'), float('nan'))
-        #     # obj.value = float(rec[0])
-        #     soln.variable[sym] = {"Value": float(rec[0])}
-        #     if extract_rc and has_rc_info:
-        #         try:
-        #             # model.rc[obj] = float(rec[1])
-        #             soln.variable[sym]['rc'] = float(rec[1])
-        #         except ValueError:
-        #             # Solver didn't provide marginals
-        #             has_rc_info = False
-
-        # if extract_dual:
-        #     for c in model.component_data_objects(Constraint, active=True):
-        #         if (c.body.is_fixed()) or (not (c.has_lb() or c.has_ub())):
-        #             # the constraint was not sent to GAMS
-        #             continue
-        #         sym = gms_info.var_symbol_map.getSymbol(c)
-        #         if c.equality:
-        #             try:
-        #                 rec = model_soln[sym]
-        #             except KeyError:
-        #                 # no solution returned
-        #                 rec = (float('nan'), float('nan'))
-        #             try:
-        #                 # model.dual[c] = float(rec[1])
-        #                 soln.constraint[sym] = {'dual': float(rec[1])}
-        #             except ValueError:
-        #                 # Solver didn't provide marginals
-        #                 # nothing else to do here
-        #                 break
-        #         else:
-        #             # Inequality, assume if 2-sided that only
-        #             # one side's marginal is nonzero
-        #             # Negate marginal for _lo equations
-        #             marg = 0
-        #             if c.lower is not None:
-        #                 try:
-        #                     rec_lo = model_soln[sym + '_lo']
-        #                 except KeyError:
-        #                     # no solution returned
-        #                     rec_lo = (float('nan'), float('nan'))
-        #                 try:
-        #                     marg -= float(rec_lo[1])
-        #                 except ValueError:
-        #                     # Solver didn't provide marginals
-        #                     marg = float('nan')
-        #             if c.upper is not None:
-        #                 try:
-        #                     rec_hi = model_soln[sym + '_hi']
-        #                 except KeyError:
-        #                     # no solution returned
-        #                     rec_hi = (float('nan'), float('nan'))
-        #                 try:
-        #                     marg += float(rec_hi[1])
-        #                 except ValueError:
-        #                     # Solver didn't provide marginals
-        #                     marg = float('nan')
-        #             if not math.isnan(marg):
-        #                 # model.dual[c] = marg
-        #                 soln.constraint[sym] = {'dual': marg}
-        #             else:
-        #                 # Solver didn't provide marginals
-        #                 # nothing else to do here
-        #                 break
-
-        # results.solution.insert(soln)
-
-        # Dummy fill-in for contrib-solver
-        # results.solution_status = soln.status
-        # results.termination_condition = rev_legacy_termination_condition_map[results.solver.termination_condition]
-        # results.lower_bound = stat_vars["OBJEST"]
-        # results.upper_bound = stat_vars["OBJEST"]
-        # results.objective_bound = None
-        # results.incumbent_objective = None
-        # results.timing_info = None
-
-        ####################################################################
-        # Finish with results
-        ####################################################################
-        # smap_id = id(gms_info.con_symbol_map)
-        # results._smap_id = smap_id
-        # results._smap = None
-
-        # if config.load_solutions:
-        #     model.solutions.load_from(results)
-        #     results._smap_id = None
-        #     results.solution.clear()
-        # else:
-        #     results._smap = model.solutions.symbol_map[smap_id]
-        #     model.solutions.delete_symbol_map(smap_id)
-
-        # postsolve_completion_time = time.time()
-        # if report_timing:
-        #     print(
-        #         "      %6.2f seconds required for postsolve"
-        #         % (postsolve_completion_time - solve_completion_time)
-        #     )
-        #     print(
-        #         "      %6.2f seconds required total"
-        #         % (postsolve_completion_time - initial_time)
-        #     )
         end_timestamp = datetime.datetime.now(datetime.timezone.utc)
         results.timing_info.start_timestamp = start_timestamp
         results.timing_info.wall_time = (
@@ -1069,6 +774,28 @@ class GAMS(SolverBase):
         gdxcc.gdxLibraryUnload()
         return model_soln, stat_vars
     
-    def _parse_dat_results(self, results_filename, statresults_filename):
-        raise NotImplementedError('WIP')
+    def _parse_dat_results(self, config, results_filename, statresults_filename):
+        with open(statresults_filename, 'r') as statresults_file:
+            statresults_text = statresults_file.read()
+
+        stat_vars = dict()
+        # Skip first line of explanatory text
+        for line in statresults_text.splitlines()[1:]:
+            items = line.split()
+            try:
+                stat_vars[items[0]] = float(items[1])
+            except ValueError:
+                # GAMS printed NA, just make it nan
+                stat_vars[items[0]] = float('nan')
+
+        with open(results_filename, 'r') as results_file:
+            results_text = results_file.read()
+
+        model_soln = dict()
+        # Skip first line of explanatory text
+        for line in results_text.splitlines()[1:]:
+            items = line.split()
+            model_soln[items[0]] = (float(items[1]), float(items[2]))
+
+        return model_soln, stat_vars
     

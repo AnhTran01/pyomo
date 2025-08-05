@@ -647,32 +647,30 @@ class _GMSWriter_impl(object):
                     ostream.write(", %s" % stat)
                 ostream.write(";\n")
             else:
-                raise NotImplementedError(
-                    "GAMSWriter: put_results_format='dat' is not implemented yet"
+                results = config.put_results + '.dat'
+                ostream.write("\nfile results /'%s'/;" % results)
+                ostream.write("\nresults.nd=15;")
+                ostream.write("\nresults.nw=21;")
+                ostream.write("\nput results;")
+                ostream.write("\nput 'SYMBOL  :  LEVEL  :  MARGINAL' /;")
+                for sym, var in self.var_symbol_map.bySymbol.items():
+                    if var.parent_component().ctype is Var:
+                        ostream.write("\nput %s ' ' %s.l ' ' %s.m /;" % (sym, sym, sym))
+                for con in self.con_symbol_map.bySymbol.keys():
+                    ostream.write("\nput %s ' ' %s.l ' ' %s.m /;" % (con, con, con))
+                ostream.write(
+                    "\nput GAMS_OBJECTIVE ' ' GAMS_OBJECTIVE.l "
+                    "' ' GAMS_OBJECTIVE.m;\n"
                 )
-                # results = config.put_results + '.dat'
-                # ostream.write("\nfile results /'%s'/;" % results)
-                # ostream.write("\nresults.nd=15;")
-                # ostream.write("\nresults.nw=21;")
-                # ostream.write("\nput results;")
-                # ostream.write("\nput 'SYMBOL  :  LEVEL  :  MARGINAL' /;")
-                # for var in var_list:
-                #     ostream.write("\nput %s ' ' %s.l ' ' %s.m /;" % (var, var, var))
-                # for con in constraint_names:
-                #     ostream.write("\nput %s ' ' %s.l ' ' %s.m /;" % (con, con, con))
-                # ostream.write(
-                #     "\nput GAMS_OBJECTIVE ' ' GAMS_OBJECTIVE.l "
-                #     "' ' GAMS_OBJECTIVE.m;\n"
-                # )
 
-                # statresults = config.put_results + 'stat.dat'
-                # ostream.write("\nfile statresults /'%s'/;" % statresults)
-                # ostream.write("\nstatresults.nd=15;")
-                # ostream.write("\nstatresults.nw=21;")
-                # ostream.write("\nput statresults;")
-                # ostream.write("\nput 'SYMBOL   :   VALUE' /;")
-                # for stat in stat_vars:
-                #     ostream.write("\nput '%s' ' ' %s /;\n" % (stat, stat))
+                statresults = config.put_results + 'stat.dat'
+                ostream.write("\nfile statresults /'%s'/;" % statresults)
+                ostream.write("\nstatresults.nd=15;")
+                ostream.write("\nstatresults.nw=21;")
+                ostream.write("\nput statresults;")
+                ostream.write("\nput 'SYMBOL   :   VALUE' /;")
+                for stat in stat_vars:
+                    ostream.write("\nput '%s' ' ' %s /;\n" % (stat, stat))
 
 
         timer.toc("Finished writing .gsm file", level=logging.DEBUG)
