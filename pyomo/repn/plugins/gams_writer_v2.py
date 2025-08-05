@@ -546,7 +546,10 @@ class _GMSWriter_impl(object):
             elif v.is_binary():
                 binary_vars.append(v_symbol)
             elif v.is_integer():
+                lb, ub = v.bounds
+                var_bounds[v_symbol] = (lb, ub)
                 integer_vars.append(v_symbol)
+
 
         ostream.write(
             f"\tGAMS_OBJECTIVE;\n\n"
@@ -588,7 +591,7 @@ class _GMSWriter_impl(object):
 
         # CHECK FOR mtype flag based on variable domains - reals, integer
         if config.mtype is None:
-            if binary_vars:
+            if binary_vars or integer_vars:
                 config.mtype = 'mip' # expand this to nlp, minlp
             else:
                 config.mtype = 'lp'
@@ -597,7 +600,7 @@ class _GMSWriter_impl(object):
             ostream.write("option savepoint=1;\n")
 
         ostream.write(
-            "SOLVE %s USING %s %simizing GAMS_OBJECTIVE;"
+            "SOLVE %s USING %s %simizing GAMS_OBJECTIVE;\n"
             % (model.name, config.mtype, 'min' if obj.sense == minimize else 'max')
         )
         # Set variables to store certain statuses and attributes
@@ -613,7 +616,7 @@ class _GMSWriter_impl(object):
             'ETSOLVE',
         ]
         ostream.write(
-            "Scalars MODELSTAT 'model status', SOLVESTAT 'solve status';\n"
+            "\nScalars MODELSTAT 'model status', SOLVESTAT 'solve status';\n"
         )
         ostream.write("MODELSTAT = %s.modelstat;\n" % model.name)
         ostream.write("SOLVESTAT = %s.solvestat;\n\n" % model.name)

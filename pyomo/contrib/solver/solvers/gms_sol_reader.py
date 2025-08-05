@@ -65,12 +65,8 @@ class GMSSolutionLoader(SolutionLoaderBase):
         else:
             for sym, obj in self._gms_info.var_symbol_map.bySymbol.items():
                 level = self._gdx_data[sym][0]
-                marginal = self._gdx_data[sym][1]
                 if obj.parent_component().ctype is Var:
                     obj.set_value(level, skip_validation = True)
-
-            # for var, val in zip(self._gms_info.var_symbol_map.variables, self._sol_data.primals):
-            #     var.set_value(val, skip_validation=True)
 
         StaleFlagManager.mark_all_as_stale(delayed=True)
 
@@ -101,219 +97,46 @@ class GMSSolutionLoader(SolutionLoaderBase):
     def get_duals(
         self, cons_to_load: Optional[Sequence[ConstraintData]] = None
     ) -> Dict[ConstraintData, float]:
-        if self._nl_info is None:
+        if self._gms_info is None:
             raise RuntimeError(
                 'Solution loader does not currently have a valid solution. Please '
                 'check results.termination_condition and/or results.solution_status.'
             )
-        if len(self._nl_info.eliminated_vars) > 0:
-            raise NotImplementedError(
-                'For now, turn presolve off (opt.config.writer_config.linear_presolve=False) '
-                'to get dual variable values.'
-            )
-        if self._sol_data is None:
-            raise DeveloperError(
-                "Solution data is empty. This should not "
-                "have happened. Report this error to the Pyomo Developers."
+        if self._gdx_data is None:
+            raise RuntimeError(
+                'Solution loader does not currently have a valid solution. Please '
+                'check results.termination_condition and/or results.solution_status.'
             )
         res = {}
-        if self._nl_info.scaling is None:
-            scale_list = [1] * len(self._nl_info.constraints)
-            obj_scale = 1
-        else:
-            scale_list = self._nl_info.scaling.constraints
-            obj_scale = self._nl_info.scaling.objectives[0]
+
         if cons_to_load is None:
-            cons_to_load = set(self._nl_info.constraints)
+            cons_to_load = set(self._gms_info.con_symbol_map.bySymbol.keys())
         else:
             cons_to_load = set(cons_to_load)
-        for con, val, scale in zip(
-            self._nl_info.constraints, self._sol_data.duals, scale_list
-        ):
-            if con in cons_to_load:
-                res[con] = val * scale / obj_scale
+        for sym, con in self._gms_info.con_symbol_map.bySymbol.items():
+            if sym in cons_to_load and con.parent_component().ctype is not Objective:
+                res[con] = self._gdx_data[sym][1] 
         return res
 
     def get_reduced_costs(self, vars_to_load = None):
-        raise NotImplementedError('WIP')
-    
-def parse_gdx_file(
-    gdx_file: Dict, gms_info: GAMSWriterInfo, result: Results
-) -> Tuple[Results, GDXFileData]:
-    """
-    Parse a .gdx file and populate to Pyomo objects
-    """
-    gdx_data = GDXFileData()
-
-    #
-    # Some solvers (minto) do not write a message.  We will assume
-    # all non-blank lines up to the 'Options' line is the message.
-    # For backwards compatibility and general safety, we will parse all
-    # lines until "Options" appears. Anything before "Options" we will
-    # consider to be the solver message.
-    options_found = False
-    message = []
-    model_objects = []
-    for line in sol_file:
-        if not line:
-            break
-        line = line.strip()
-        if "Options" in line:
-            # Once "Options" appears, we must now read the content under it.
-            options_found = True
-            line = sol_file.readline()
-            number_of_options = int(line)
-            # We are adding in this DeveloperError to see if the alternative case
-            # is ever actually hit in the wild. In a previous iteration of the sol
-            # reader, there was logic to check for the number of options, but it
-            # was uncovered by tests and unclear if actually necessary.
-            if number_of_options > 4:
-                raise DeveloperError(
-                    """
-    The sol file reader has hit an unexpected error while parsing. The number of
-    options recorded is greater than 4. Please report this error to the Pyomo
-    developers.
-    """
-                )
-            for i in range(number_of_options + 4):
-                line = sol_file.readline()
-                model_objects.append(int(line))
-            break
-        message.append(line)
-    if not options_found:
-        raise PyomoException("ERROR READING `sol` FILE. No 'Options' line found.")
-    message = '\n'.join(message)
-    # Identify the total number of variables and constraints
-    number_of_cons = model_objects[number_of_options + 1]
-    number_of_vars = model_objects[number_of_options + 3]
-    assert number_of_cons == len(nl_info.constraints)
-    assert number_of_vars == len(nl_info.variables)
-
-    duals = [float(sol_file.readline()) for i in range(number_of_cons)]
-    variable_vals = [float(sol_file.readline()) for i in range(number_of_vars)]
-
-    # Parse the exit code line and capture it
-    exit_code = [0, 0]
-    line = sol_file.readline()
-    if line and ('objno' in line):
-        exit_code_line = line.split()
-        if len(exit_code_line) != 3:
-            raise PyomoException(
-                f"ERROR READING `sol` FILE. Expected two numbers in `objno` line; received {line}."
+        if self._gms_info is None:
+            raise RuntimeError(
+                'Solution loader does not currently have a valid solution. Please '
+                'check results.termination_condition and/or results.solution_status.'
             )
-        exit_code = [int(exit_code_line[1]), int(exit_code_line[2])]
-    else:
-        raise PyomoException(
-            f"ERROR READING `sol` FILE. Expected `objno`; received {line}."
-        )
-    result.extra_info.solver_message = message.strip().replace('\n', '; ')
-    exit_code_message = ''
-    if (exit_code[1] >= 0) and (exit_code[1] <= 99):
-        result.solution_status = SolutionStatus.optimal
-        result.termination_condition = TerminationCondition.convergenceCriteriaSatisfied
-    elif (exit_code[1] >= 100) and (exit_code[1] <= 199):
-        exit_code_message = "Optimal solution indicated, but ERROR LIKELY!"
-        result.solution_status = SolutionStatus.feasible
-        result.termination_condition = TerminationCondition.error
-    elif (exit_code[1] >= 200) and (exit_code[1] <= 299):
-        exit_code_message = "INFEASIBLE SOLUTION: constraints cannot be satisfied!"
-        result.solution_status = SolutionStatus.infeasible
-        result.termination_condition = TerminationCondition.locallyInfeasible
-    elif (exit_code[1] >= 300) and (exit_code[1] <= 399):
-        exit_code_message = (
-            "UNBOUNDED PROBLEM: the objective can be improved without limit!"
-        )
-        result.solution_status = SolutionStatus.noSolution
-        result.termination_condition = TerminationCondition.unbounded
-    elif (exit_code[1] >= 400) and (exit_code[1] <= 499):
-        exit_code_message = (
-            "EXCEEDED MAXIMUM NUMBER OF ITERATIONS: the solver "
-            "was stopped by a limit that you set!"
-        )
-        result.solution_status = SolutionStatus.infeasible
-        result.termination_condition = (
-            TerminationCondition.iterationLimit
-        )  # this is not always correct
-    elif (exit_code[1] >= 500) and (exit_code[1] <= 599):
-        exit_code_message = (
-            "FAILURE: the solver stopped by an error condition "
-            "in the solver routines!"
-        )
-        result.termination_condition = TerminationCondition.error
+        if self._gdx_data is None:
+            raise RuntimeError(
+                'Solution loader does not currently have a valid solution. Please '
+                'check results.termination_condition and/or results.solution_status.'
+            )
+        
+        res = {}
 
-    if result.extra_info.solver_message:
-        if exit_code_message:
-            result.extra_info.solver_message += '; ' + exit_code_message
-    else:
-        result.extra_info.solver_message = exit_code_message
-
-    if result.solution_status != SolutionStatus.noSolution:
-        sol_data.primals = variable_vals
-        sol_data.duals = duals
-        ### Read suffixes ###
-        line = sol_file.readline()
-        while line:
-            line = line.strip()
-            if line == "":
-                continue
-            line = line.split()
-            # Extra solver message processing
-            if line[0] != 'suffix':
-                # We assume this is the start of a
-                # section like kestrel_option, which
-                # comes after all suffixes.
-                remaining = ''
-                line = sol_file.readline()
-                while line:
-                    remaining += line.strip() + '; '
-                    line = sol_file.readline()
-                result.extra_info.solver_message += remaining
-                break
-            read_data_type = int(line[1])
-            data_type = read_data_type & 3  # 0-var, 1-con, 2-obj, 3-prob
-            convert_function = int
-            if (read_data_type & 4) == 4:
-                convert_function = float
-            number_of_entries = int(line[2])
-            # The third entry is name length, and it is length+1. This is unnecessary
-            # except for data validation.
-            # The fourth entry is table "length", e.g., memory size.
-            number_of_string_lines = int(line[5])
-            suffix_name = sol_file.readline().strip()
-            # Add any arbitrary string lines to the "other" list
-            for line in range(number_of_string_lines):
-                sol_data.other.append(sol_file.readline())
-            if data_type == 0:  # Var
-                sol_data.var_suffixes[suffix_name] = {}
-                for cnt in range(number_of_entries):
-                    suf_line = sol_file.readline().split()
-                    var_ndx = int(suf_line[0])
-                    sol_data.var_suffixes[suffix_name][var_ndx] = convert_function(
-                        suf_line[1]
-                    )
-            elif data_type == 1:  # Con
-                sol_data.con_suffixes[suffix_name] = {}
-                for cnt in range(number_of_entries):
-                    suf_line = sol_file.readline().split()
-                    con_ndx = int(suf_line[0])
-                    sol_data.con_suffixes[suffix_name][con_ndx] = convert_function(
-                        suf_line[1]
-                    )
-            elif data_type == 2:  # Obj
-                sol_data.obj_suffixes[suffix_name] = {}
-                for cnt in range(number_of_entries):
-                    suf_line = sol_file.readline().split()
-                    obj_ndx = int(suf_line[0])
-                    sol_data.obj_suffixes[suffix_name][obj_ndx] = convert_function(
-                        suf_line[1]
-                    )
-            elif data_type == 3:  # Prob
-                sol_data.problem_suffixes[suffix_name] = []
-                for cnt in range(number_of_entries):
-                    suf_line = sol_file.readline().split()
-                    sol_data.problem_suffixes[suffix_name].append(
-                        convert_function(suf_line[1])
-                    )
-            line = sol_file.readline()
-
-    return result, sol_data
+        if vars_to_load is None:
+            vars_to_load = set(self._gms_info.var_symbol_map.bySymbol.keys())
+        else:
+            vars_to_load = set(vars_to_load)
+        for sym, var in self._gms_info.var_symbol_map.bySymbol.items():
+            if sym in vars_to_load and var.parent_component().ctype is Var:
+                res[var.name] = self._gdx_data[sym][1] 
+        return res

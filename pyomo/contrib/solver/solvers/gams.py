@@ -643,23 +643,22 @@ class GAMS(SolverBase):
             results.solution_status in {SolutionStatus.feasible, SolutionStatus.optimal}
         ):
             results.solution_loader = GMSSolutionLoader(gdx_data=model_soln, gms_info=gms_info)
-
-            results.incumbent_objective = stat_vars["OBJVAL"]
-
+    
             if config.load_solutions:
                 results.solution_loader.load_vars()
-                # if (
-                #     hasattr(model, 'dual')
-                #     and isinstance(model.dual, Suffix)
-                #     and model.dual.import_enabled()
-                # ):
-                #     model.dual.update(results.solution_loader.get_duals())
-                # if (
-                #     hasattr(model, 'rc')
-                #     and isinstance(model.rc, Suffix)
-                #     and model.rc.import_enabled()
-                # ):
-                #     model.rc.update(results.solution_loader.get_reduced_costs())
+                results.incumbent_objective = stat_vars["OBJVAL"]
+                if (
+                    hasattr(model, 'dual')
+                    and isinstance(model.dual, Suffix)
+                    and model.dual.import_enabled()
+                ):
+                    model.dual.update(results.solution_loader.get_duals())
+                if (
+                    hasattr(model, 'rc')
+                    and isinstance(model.rc, Suffix)
+                    and model.rc.import_enabled()
+                ):
+                    model.rc.update(results.solution_loader.get_reduced_costs())
             else:
 
                 results.incumbent_objective = value(
@@ -1070,17 +1069,6 @@ class GAMS(SolverBase):
         gdxcc.gdxLibraryUnload()
         return model_soln, stat_vars
     
-    # def _parse_solution(self, instream: io.TextIOBase, gms_info: GAMSWriterInfo):
-    #     results = Results()
-    #     res, sol_data = parse_sol_file(
-    #         sol_file=instream, nl_info=nl_info, result=results
-    #     )
-
-    #     if res.solution_status == SolutionStatus.noSolution:
-    #         res.solution_loader = SolSolutionLoader(None, None)
-    #     else:
-    #         res.solution_loader = IpoptSolutionLoader(
-    #             sol_data=sol_data, nl_info=nl_info
-    #         )
-
-    #     return res
+    def _parse_dat_results(self, results_filename, statresults_filename):
+        raise NotImplementedError('WIP')
+    
